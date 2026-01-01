@@ -6,12 +6,91 @@ import os
 import pandas as pd
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, 
                              QHBoxLayout, QWidget, QComboBox, QLabel, 
-                             QCheckBox, QPushButton, QFileDialog, QMessageBox, QSizePolicy, QTabWidget)
-from PyQt6.QtCore import Qt
+                             QCheckBox, QPushButton, QFileDialog, QMessageBox, QTabWidget, QComboBox)
+from PyQt6.QtCore import Qt, QEvent, pyqtSignal
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
 
+
+
+
+class CheckableComboBox(QComboBox):
+    # Define the custom signal at the class level
+    selectionChanged = pyqtSignal()
+
+    def __init__(self):
+        super().__init__()
+        self.setEditable(True)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().setPlaceholderText("Select Skills...")
+        
+        self.model = QStandardItemModel(self)
+        self.setModel(self.model)
+        
+        # Listen to the MODEL for changes, not the mouse.
+        # This fires whenever a checkbox is toggled.
+        self.model.itemChanged.connect(self.on_item_changed)
+        
+        # Install event filter to keep the popup open
+        self.view().viewport().installEventFilter(self)
+
+    def on_item_changed(self, item):
+        # Update the text box to summarize selection
+        self.update_display_text()
+        # Fire our custom signal to tell the Main Window to update the graph
+        self.selectionChanged.emit()
+
+    def eventFilter(self, obj, event):
+        # We still need this filter ONLY to stop the popup from closing
+        if obj == self.view().viewport() and event.type() == QEvent.Type.MouseButtonRelease:
+            index = self.view().indexAt(event.pos())
+            if index.isValid():
+                item = self.model.itemFromIndex(index)
+                
+                # Toggle state manually (because we consume the event below)
+                if item.checkState() == Qt.CheckState.Checked:
+                    item.setCheckState(Qt.CheckState.Unchecked)
+                else:
+                    item.setCheckState(Qt.CheckState.Checked)
+                
+                # Prevent the dropdown from closing
+                return True
+                
+        return super().eventFilter(obj, event)
+
+    def update_display_text(self):
+        items = self.get_checked_items()
+        text = ""
+        if not items:
+            text = ""
+        elif len(items) == 1:
+            text = items[0]
+        elif len(items) == self.model.rowCount():
+            text = "All Skills"
+        else:
+            text = f"{len(items)} Skills Selected"
+        
+        self.lineEdit().setText(text)
+
+    def add_item(self, text):
+        item = QStandardItem(text)
+        item.setCheckable(True)
+        item.setCheckState(Qt.CheckState.Unchecked)
+        self.model.appendRow(item)
+        
+    def get_checked_items(self):
+        checked_items = []
+        for i in range(self.model.rowCount()):
+            item = self.model.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                checked_items.append(item.text())
+        return checked_items
+
+    def clear(self):
+        self.model.clear()
+        self.lineEdit().clear()
 
 class DamageAnalyzer(QMainWindow):
     def __init__(self):
@@ -36,10 +115,12 @@ class DamageAnalyzer(QMainWindow):
         self.load_btn.clicked.connect(self.open_file_dialog)
         
         # Filters
-        self.skill_combo = QComboBox()
-        self.skill_combo.addItem("All Skills")
+        # Create the custom widget
+        self.skill_combo = CheckableComboBox()
         self.skill_combo.setEnabled(False)
-        self.skill_combo.currentTextChanged.connect(self.update_all_charts)
+        self.skill_combo.setMinimumWidth(200)       # Button width
+        self.skill_combo.view().setMinimumWidth(400) # Popup list width
+        self.skill_combo.selectionChanged.connect(self.update_all_charts)
 
         self.crit_check = QCheckBox("Show Critical Hits Only")
         self.crit_check.setEnabled(False)
@@ -51,13 +132,22 @@ class DamageAnalyzer(QMainWindow):
 
         # Add to layout
         top_controls.addWidget(self.load_btn)
-        top_controls.addWidget(QLabel(" | Filter:"))
-        top_controls.addWidget(self.skill_combo)
         top_controls.addWidget(self.crit_check)
         top_controls.addWidget(self.heavy_check)
+        top_controls.addWidget(QLabel("Filter by skill(s)"))
+        top_controls.addWidget(self.skill_combo)
         top_controls.addStretch()
 
+
+        self.reset_btn = QPushButton("Reset Filter")
+        self.reset_btn.setFixedSize(80, 25)
+        self.reset_btn.clicked.connect(self.reset_filters)
+
+        top_controls.addWidget(self.reset_btn)
+
         self.layout.addLayout(top_controls)
+
+        
 
 # --- 2. THE TAB WIDGET ---
         self.tabs = QTabWidget()
@@ -138,6 +228,15 @@ class DamageAnalyzer(QMainWindow):
         elif index == 0:
             pass
 
+        # Add this method:
+    def reset_filters(self):
+            self.skill_combo.clear()
+            # Refill with unchecked items or just clear selection
+            if not self.df.empty:
+                skills = sorted(self.df['SkillName'].dropna().unique().astype(str))
+                for skill in skills:
+                    self.skill_combo.add_item(skill)
+            self.update_all_charts()
 
     def open_file_dialog(self):
         # Open Explorer in the log directory used by TnL
@@ -156,11 +255,11 @@ class DamageAnalyzer(QMainWindow):
                 # Update UI
                 self.skill_combo.blockSignals(True)
                 self.skill_combo.clear()
-                self.skill_combo.addItem("All Skills")
+            
                 if 'SkillName' in self.df.columns:
                     skills = sorted(self.df['SkillName'].dropna().unique().astype(str))
-                    self.skill_combo.addItems(skills)
-                self.skill_combo.blockSignals(False)
+                    for skill in skills:
+                        self.skill_combo.add_item(skill) # Use our custom add_item method
                 
                 self.skill_combo.setEnabled(True)
                 self.crit_check.setEnabled(True)
@@ -171,6 +270,9 @@ class DamageAnalyzer(QMainWindow):
                 self.lbl_dps.setStyleSheet(font_style)
                 self.lbl_duration.setStyleSheet("font-size: 18px; color: #cccccc;")
                 self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #cccccc;")
+
+                # Unblock signals from the skill combo box
+                self.skill_combo.blockSignals(False)
                 
                 self.update_all_charts()
 
@@ -182,8 +284,10 @@ class DamageAnalyzer(QMainWindow):
         if self.df.empty: return pd.DataFrame()
         
         temp_df = self.df.copy()
-        if self.skill_combo.currentText() != "All Skills":
-            temp_df = temp_df[temp_df['SkillName'] == self.skill_combo.currentText()]
+        selected_skills = self.skill_combo.get_checked_items()
+        if selected_skills:
+            # Use .isin() for multiple values
+            temp_df = temp_df[temp_df['SkillName'].isin(selected_skills)]
         if self.crit_check.isChecked():
             temp_df = temp_df[temp_df['CriticalHit'] == 1]
         if self.heavy_check.isChecked():
