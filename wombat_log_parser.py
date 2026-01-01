@@ -7,6 +7,7 @@ import pandas as pd
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, 
                              QHBoxLayout, QWidget, QComboBox, QLabel, 
                              QCheckBox, QPushButton, QFileDialog, QMessageBox, QSizePolicy, QTabWidget)
+from PyQt6.QtCore import Qt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
@@ -62,7 +63,41 @@ class DamageAnalyzer(QMainWindow):
         self.tabs = QTabWidget()
         self.layout.addWidget(self.tabs)
 
-        # --- Tab 1: Total Damage ---
+        # --- Tab 1: Overview (The Dashboard) ---
+        self.tab_overview = QWidget()
+        self.tab_overview_layout = QVBoxLayout(self.tab_overview)
+
+        # Create Labels for the stats (Start with placeholder text)
+        self.lbl_total_damage = QLabel("Total Damage: 0")
+        self.lbl_dps = QLabel("Overall DPS: 0")
+        self.lbl_duration = QLabel("Fight Duration: 0s")
+        self.lbl_top_skill = QLabel("Top Skill: None")
+
+        # Style the labels (CSS-like styling in PyQt)
+        # We make them large and bold
+        # Make the colors 'greyed out' until a combat log is imported.
+        font_style = "font-size: 24px; font-weight: bold; color: #333;"
+        self.lbl_total_damage.setStyleSheet(font_style)
+        self.lbl_dps.setStyleSheet(font_style)
+        self.lbl_duration.setStyleSheet("font-size: 18px; color: #555;")
+        self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #555;")
+
+        # Add them to the layout with some spacing
+        self.tab_overview_layout.addStretch()
+        self.tab_overview_layout.addWidget(self.lbl_total_damage)
+        self.tab_overview_layout.addWidget(self.lbl_dps)
+        self.tab_overview_layout.addWidget(self.lbl_duration)
+        self.tab_overview_layout.addWidget(self.lbl_top_skill)
+        self.tab_overview_layout.addStretch()
+
+        # Center align the text
+        for lbl in [self.lbl_total_damage, self.lbl_dps, self.lbl_duration, self.lbl_top_skill]:
+            lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Add to the Tab Widget
+        self.tabs.addTab(self.tab_overview, "Overview")
+
+        # --- Tab 2: Total Damage ---
         self.tab_total = QWidget()
         self.tab_total_layout = QVBoxLayout(self.tab_total)
         
@@ -70,9 +105,9 @@ class DamageAnalyzer(QMainWindow):
         self.canvas_total = FigureCanvas(self.fig_total)
         self.tab_total_layout.addWidget(self.canvas_total)
         
-        self.tabs.addTab(self.tab_total, "Total Damage")
+        self.tabs.addTab(self.tab_total, "Damage By Source")
 
-        # --- Tab 2: DPS (Damage Per Second) ---
+        # --- Tab 3: DPS (Damage Per Second) ---
         self.tab_dps = QWidget()
         self.tab_dps_layout = QVBoxLayout(self.tab_dps)
         
@@ -90,16 +125,19 @@ class DamageAnalyzer(QMainWindow):
         Forces a layout refresh because charts drawn on hidden tabs 
         often have broken margins until redrawn.
         """
-        # index 0 is Total Damage, index 1 is DPS
-        if index == 1: 
-            # We are now looking at the DPS tab.
-            # Force Matplotlib to re-calculate layout based on the *actual* visible size.
+        # index 0 is overview, index 1 is damage by skill, index 2 is DPS
+        if index == 2:
             self.fig_dps.tight_layout()
             self.canvas_dps.draw()
 
-        elif index == 0:
+        elif index == 1:             
             self.fig_total.tight_layout()
             self.canvas_total.draw()
+
+        # We don't have a canvas for the overview page so no reformatting is needed.
+        elif index == 0:
+            pass
+
 
     def open_file_dialog(self):
         # Open Explorer in the log directory used by TnL
@@ -127,6 +165,12 @@ class DamageAnalyzer(QMainWindow):
                 self.skill_combo.setEnabled(True)
                 self.crit_check.setEnabled(True)
                 self.heavy_check.setEnabled(True)
+
+                font_style = "font-size: 24px; font-weight: bold; color: #e5e5e5;"
+                self.lbl_total_damage.setStyleSheet(font_style)
+                self.lbl_dps.setStyleSheet(font_style)
+                self.lbl_duration.setStyleSheet("font-size: 18px; color: #cccccc;")
+                self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #cccccc;")
                 
                 self.update_all_charts()
 
@@ -154,12 +198,62 @@ class DamageAnalyzer(QMainWindow):
 
     def update_all_charts(self):
         data = self.get_filtered_data()
-        
+
         # Update Tab 1
-        self.plot_total_damage(data)
+        self.update_overview(data)
         
         # Update Tab 2
+        self.plot_total_damage(data)
+        
+        # Update Tab 3
         self.plot_dps(data)
+
+    def update_overview(self, data):
+        if data.empty:
+            self.lbl_total_damage.setText("Total Damage: 0")
+            self.lbl_dps.setText("Overall DPS: 0")
+            return
+
+        # 1. Total Damage
+        total_dmg = data['DamageAmount'].sum()
+        
+        # 2. Duration & DPS
+        # We use the full DF for duration so filtering doesn't skew the time
+        if 'DT' in self.df.columns and not self.df.empty:
+            start = self.df['DT'].min()
+            end = self.df['DT'].max()
+            duration = (end - start).total_seconds()
+            if duration < 1: duration = 1
+        else:
+            duration = 1
+            
+        dps = total_dmg / duration
+
+        # 3. Top Skill
+        # Get the skill with the highest sum of damage
+        if not data.empty:
+            top_skill_series = data.groupby('SkillName')['DamageAmount'].sum().sort_values(ascending=False)
+            # Hide the 'Top Skill' line if we're filtered to one skill.
+            if top_skill_series.size == 1:
+                self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #2d2d2d;")
+            else:
+                self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #cccccc;")
+
+            if not top_skill_series.empty:
+                top_skill_name = top_skill_series.index[0]
+                top_skill_val = top_skill_series.iloc[0]
+                top_skill_txt = f"{top_skill_name} ({self.format_k_m(top_skill_val, 0)})"
+            else:
+                top_skill_txt = "None"
+        else:
+            top_skill_txt = "None"
+
+        # 4. Update Labels with Formatted Text
+        # {:,.0f} puts commas in the numbers (e.g. 1,200,500)
+        self.lbl_total_damage.setText(f"Total Damage: {total_dmg:,.0f}")
+        self.lbl_dps.setText(f"Overall DPS: {dps:,.0f}")
+        self.lbl_duration.setText(f"Fight Duration: {duration:.1f}s")
+        self.lbl_top_skill.setText(f"Top Skill: {top_skill_txt}")
 
     def plot_total_damage(self, data):
         self.fig_total.clear()
@@ -189,7 +283,7 @@ class DamageAnalyzer(QMainWindow):
             # .fillna(0) ensures seconds with no hits drop to 0 damage
             dps_df = data.groupby([pd.Grouper(key='DT', freq='1s'), 'SkillName'])['DamageAmount'].sum().unstack().fillna(0)
             
-            # --- 2. CONVERT TO RELATIVE TIME (Optional but Recommended) ---
+            # --- 2. CONVERT TO RELATIVE TIME ---
             # Currently, the index is timestamps (2025-12-07 13:04:08). 
             # We want "Seconds since fight start".
             start_time = dps_df.index.min()
