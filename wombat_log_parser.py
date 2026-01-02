@@ -6,12 +6,83 @@ import os
 import pandas as pd
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, 
                              QHBoxLayout, QWidget, QComboBox, QLabel, 
-                             QCheckBox, QPushButton, QFileDialog, QMessageBox, QTabWidget, QComboBox)
+                             QCheckBox, QPushButton, QFileDialog, QMessageBox, QTabWidget, QComboBox,
+                             QDialog, QLineEdit, QDialogButtonBox)
 from PyQt6.QtCore import Qt, QEvent, pyqtSignal
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 import matplotlib.ticker as ticker
+
+import threading # For non-blocking file share setups
+from io import StringIO # For treating CSV strings as text files
+
+from wombat_session import GroupSession
+
+
+class FileShareDialog(QDialog):
+    def __init__(self, parent=None, fname=None, session_code=None):
+        super().__init__(parent)
+        self.setWindowTitle("Log File Sharing")
+        base_font_style = "font-size: 14px; font-weight: bold; color: #e5e5e5;"
+        code_font_style = "font-size: 12px; font-weight: bold; color: #e5e5e5; border: 2px solid black;"
+        layout = QVBoxLayout()
+
+        file_message = QLabel(f"Sharing file \"{fname}\".")
+        file_message.setStyleSheet(base_font_style)
+
+        session_code_pre = QLabel(f"Send this code to the receiver:")
+        session_code_pre.setStyleSheet(base_font_style)
+
+        session_code_message = QLabel(session_code)
+        session_code_message.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        session_code_message.setStyleSheet(code_font_style)
+
+        end_button = QPushButton("Stop Sharing")
+        end_button.setMaximumWidth(200)
+        end_button.clicked.connect(self.reject)
+
+        layout.addWidget(file_message)
+        layout.addWidget(session_code_pre)
+        layout.addWidget(session_code_message)
+        layout.addWidget(end_button)
+
+        self.setLayout(layout)
+
+class FileImportDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("File Import Dialog")
+
+        base_font_style = "font-size: 14px; font-weight: bold; color: #e5e5e5;"
+        layout = QVBoxLayout()
+
+        message = QLabel("Enter session code:")
+        message.setStyleSheet(base_font_style)
+        self.session_code_input = QLineEdit()
+        self.merge_check = QCheckBox("Merge with current data")
+
+
+        # Standard OK/Cancel buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | 
+                                   QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept) # Closes dialog with "Success" result
+        buttons.rejected.connect(self.reject) # Closes dialog with "Failure" result
+
+
+        layout.addWidget(message)
+        layout.addWidget(self.session_code_input)
+        layout.addWidget(self.merge_check)
+        layout.addWidget(buttons)
+        self.setLayout(layout)
+
+    def get_input(self):
+        return self.session_code_input.text()
+
+    def get_merge(self):
+        return self.merge_check.checkState()
+
+
 
 
 
@@ -131,25 +202,24 @@ class DamageAnalyzer(QMainWindow):
         self.load_extra_log_btn.setEnabled(False)
         self.load_extra_log_btn.clicked.connect(lambda : self.open_file_dialog(merge=True))
 
-        self.crit_check = QCheckBox("Show Critical Hits Only")
-        self.crit_check.setEnabled(False)
-        self.crit_check.stateChanged.connect(self.update_all_charts)
+        self.send_log_btn = QPushButton("➡️ Share a Log File by code")
+        self.send_log_btn.setEnabled(True) # We want sharing to be enabled without needing to load a log file.
+        self.send_log_btn.clicked.connect(self.share_file)
 
-        self.heavy_check = QCheckBox("Show Heavy Attacks Only")
-        self.heavy_check.setEnabled(False)
-        self.heavy_check.stateChanged.connect(self.update_all_charts)
-
-        self.grouping_check = QCheckBox("Group by Player")
-        self.grouping_check.setEnabled(False)
-        self.grouping_check.stateChanged.connect(self.update_all_charts)
+        self.import_log_btn = QPushButton("⬇️ Import a Log File by code")
+        self.import_log_btn.setEnabled(True) # We want importing to be enabled without needing to load a log file.
+        self.import_log_btn.clicked.connect(self.receive_file)
+        
+        self.export_log_btn = QPushButton("📑 Export Current View to File")
+        self.export_log_btn.setEnabled(False)
+        self.export_log_btn.clicked.connect(self.export_log_file)
 
 
         row_1.addWidget(self.load_btn)
         row_1.addWidget(self.load_extra_log_btn)
-        row_1.addSpacing(20) # Add some padding between the load button and filter options
-        row_1.addWidget(self.crit_check)
-        row_1.addWidget(self.heavy_check)
-        row_1.addWidget(self.grouping_check)
+        row_1.addWidget(self.send_log_btn)
+        row_1.addWidget(self.import_log_btn)
+        row_1.addWidget(self.export_log_btn)
         row_1.addStretch()
 
         ### Widgets for row two
@@ -181,7 +251,22 @@ class DamageAnalyzer(QMainWindow):
         self.reset_btn.setFixedSize(80, 25)
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        
+        self.crit_check = QCheckBox("Show Critical Hits Only")
+        self.crit_check.setEnabled(False)
+        self.crit_check.stateChanged.connect(self.update_all_charts)
+
+        self.heavy_check = QCheckBox("Show Heavy Attacks Only")
+        self.heavy_check.setEnabled(False)
+        self.heavy_check.stateChanged.connect(self.update_all_charts)
+
+        self.grouping_check = QCheckBox("Group Stats by Player")
+        self.grouping_check.setEnabled(False)
+        self.grouping_check.stateChanged.connect(self.update_all_charts)
+
+
+        row_2.addWidget(self.crit_check)
+        row_2.addWidget(self.heavy_check)
+        row_2.addWidget(self.grouping_check)
         row_2.addWidget(QLabel("Filter by skill(s)"))
         row_2.addWidget(self.skill_combo)
         row_2.addSpacing(15) # Spacing
@@ -262,6 +347,63 @@ class DamageAnalyzer(QMainWindow):
 
         self.tabs.currentChanged.connect(self.on_tab_change)
 
+
+    def share_file(self):
+        """
+        Session manager for sharing a log file via session code.
+        Generates UPnP session and session code, then sets up a listening port.
+        """
+        log_dir = os.path.join(os.getenv('LOCALAPPDATA'),'TL','Saved','CombatLogs')
+        fname, _ = QFileDialog.getOpenFileName(self, "Open Combat Log", log_dir, "Text Files (*.txt)")
+        session = GroupSession()
+        try:
+            session_code = session.generate_session_code()
+            file_share_thread = threading.Thread(target=session.share, args=(fname,))
+            file_share_thread.start()
+            dialog = FileShareDialog(parent=self, fname=fname, session_code=session_code)
+            dialog.exec()
+            if file_share_thread.is_alive():
+                session.server_sock.close()
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Error while sharing log file.\n{session.status}")
+        finally:
+            if not session.server_sock._closed:
+                session.server_sock.close()
+
+
+
+    def receive_file(self):
+        """
+        Session manager for receiving a log file via session code.
+        Establishes connection and authenticates to the person sharing the file, then imports the data directly.
+        """
+        dialog = FileImportDialog(parent=self)
+        if not dialog.exec():
+            return
+        session_code = dialog.get_input()
+        merge_files = dialog.get_merge()
+        session = GroupSession()
+        received_data = session.connect_by_code(session_code)
+        if received_data is not None:
+            self.open_file_dialog(csv_data=received_data, merge=merge_files)
+        else:
+            QMessageBox.critical(self, "Error", f"Unable to download log file from remote user.\n{session.status}")
+
+    def export_log_file(self):
+        """
+        Export a current filtered/merged view as a single re-usable log file.
+        """
+        log_dir = os.path.join(os.getenv('LOCALAPPDATA'),'TL','Saved','CombatLogs')
+        fname = "WombatLogMerged.txt"
+        file_path = os.path.join(log_dir, fname)
+        with open(file_path, 'w') as outfile:
+            outfile.write("WombatLogVersion,1\n")
+        tmpdf = self.get_filtered_data()
+        tmpdf.to_csv(os.path.join(log_dir, fname), index=False, header=False, mode='a', columns=['Timestamp','LogType','SkillName','SkillId','DamageAmount','CriticalHit','HeavyHit','DamageType','CasterName','TargetName'])
+        QMessageBox.information(self, "Success", f"Combined log file written to {file_path}")
+            
+            
+
     def on_tab_change(self, index):
         """
         Event listener for tab switching. 
@@ -291,10 +433,13 @@ class DamageAnalyzer(QMainWindow):
                     self.skill_combo.add_item(skill)
             self.update_all_charts()
 
-    def open_file_dialog(self, merge=False):
+    def open_file_dialog(self, merge=False, csv_data=None):
         # Open Explorer in the log directory used by TnL
-        log_dir = os.path.join(os.getenv('LOCALAPPDATA'),'TL','Saved','CombatLogs')
-        fname, _ = QFileDialog.getOpenFileName(self, "Open Combat Log", log_dir, "Text Files (*.txt)")
+        if csv_data is not None:
+            fname = StringIO(csv_data)
+        else:
+            log_dir = os.path.join(os.getenv('LOCALAPPDATA'),'TL','Saved','CombatLogs')
+            fname, _ = QFileDialog.getOpenFileName(self, "Open Combat Log", log_dir, "Text Files (*.txt)")
         if fname:
             try:
                 this_df = pd.read_csv(fname, header=0, names=['Timestamp','LogType','SkillName','SkillId','DamageAmount','CriticalHit','HeavyHit','DamageType','CasterName','TargetName'])
@@ -347,6 +492,7 @@ class DamageAnalyzer(QMainWindow):
                 self.target_combo.setEnabled(True)
                 self.caster_combo.setEnabled(True)
                 self.load_extra_log_btn.setEnabled(True)
+                self.export_log_btn.setEnabled(True)
                 self.crit_check.setEnabled(True)
                 self.heavy_check.setEnabled(True)
                 self.grouping_check.setEnabled(True)
