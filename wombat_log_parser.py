@@ -20,11 +20,14 @@ class CheckableComboBox(QComboBox):
     # Define the custom signal at the class level
     selectionChanged = pyqtSignal()
 
-    def __init__(self):
+    def __init__(self, placeholder_text=None):
         super().__init__()
         self.setEditable(True)
         self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText("Select Skills...")
+        if placeholder_text is not None:
+            self.lineEdit().setPlaceholderText(placeholder_text)
+        else:
+            self.lineEdit().setPlaceholderText("Select Options...")
         
         self.model = QStandardItemModel(self)
         self.setModel(self.model)
@@ -88,6 +91,13 @@ class CheckableComboBox(QComboBox):
                 checked_items.append(item.text())
         return checked_items
 
+    def get_all_items(self):
+        all_items = []
+        for i in range(self.model.rowCount()):
+            item = self.model.item(i)
+            all_items.append(item.text())
+        return all_items
+
     def clear(self):
         self.model.clear()
         self.lineEdit().clear()
@@ -108,19 +118,18 @@ class DamageAnalyzer(QMainWindow):
         self.layout = QVBoxLayout(self.main_widget)
 
 # --- 1. TOP TOOLBAR & FILTERS (Shared) ---
-        top_controls = QHBoxLayout()
+        top_controls = QVBoxLayout()
+
+        ### Widgets for row one
+        row_1 = QHBoxLayout()
         
         # Load Button
         self.load_btn = QPushButton("📂 Load Combat Log")
         self.load_btn.clicked.connect(self.open_file_dialog)
-        
-        # Filters
-        # Create the custom widget
-        self.skill_combo = CheckableComboBox()
-        self.skill_combo.setEnabled(False)
-        self.skill_combo.setMinimumWidth(200)       # Button width
-        self.skill_combo.view().setMinimumWidth(400) # Popup list width
-        self.skill_combo.selectionChanged.connect(self.update_all_charts)
+
+        self.load_extra_log_btn = QPushButton("➕ Add Another Log")
+        self.load_extra_log_btn.setEnabled(False)
+        self.load_extra_log_btn.clicked.connect(lambda : self.open_file_dialog(merge=True))
 
         self.crit_check = QCheckBox("Show Critical Hits Only")
         self.crit_check.setEnabled(False)
@@ -130,20 +139,64 @@ class DamageAnalyzer(QMainWindow):
         self.heavy_check.setEnabled(False)
         self.heavy_check.stateChanged.connect(self.update_all_charts)
 
-        # Add to layout
-        top_controls.addWidget(self.load_btn)
-        top_controls.addWidget(self.crit_check)
-        top_controls.addWidget(self.heavy_check)
-        top_controls.addWidget(QLabel("Filter by skill(s)"))
-        top_controls.addWidget(self.skill_combo)
-        top_controls.addStretch()
+        self.grouping_check = QCheckBox("Group by Player")
+        self.grouping_check.setEnabled(False)
+        self.grouping_check.stateChanged.connect(self.update_all_charts)
 
 
+        row_1.addWidget(self.load_btn)
+        row_1.addWidget(self.load_extra_log_btn)
+        row_1.addSpacing(20) # Add some padding between the load button and filter options
+        row_1.addWidget(self.crit_check)
+        row_1.addWidget(self.heavy_check)
+        row_1.addWidget(self.grouping_check)
+        row_1.addStretch()
+
+        ### Widgets for row two
+        row_2 = QHBoxLayout()
+        # Filters
+        # Create the skill filter
+        self.skill_combo = CheckableComboBox()
+        self.skill_combo.setEnabled(False)
+        self.skill_combo.setMinimumWidth(100)       # Button width
+        self.skill_combo.view().setMinimumWidth(400) # Popup list width
+        self.skill_combo.selectionChanged.connect(self.update_all_charts)
+
+        # Create the target filter
+        self.target_combo = CheckableComboBox()
+        self.target_combo.setEnabled(False)
+        self.target_combo.setMinimumWidth(100)       # Button width
+        self.target_combo.view().setMinimumWidth(400) # Popup list width
+        self.target_combo.selectionChanged.connect(self.update_all_charts)
+
+        # Create the caster filter
+        self.caster_combo = CheckableComboBox()
+        self.caster_combo.setEnabled(False)
+        self.caster_combo.setMinimumWidth(100)       # Button width
+        self.caster_combo.view().setMinimumWidth(400) # Popup list width
+        self.caster_combo.selectionChanged.connect(self.update_all_charts)
+
+        # Create the filter reset button
         self.reset_btn = QPushButton("Reset Filter")
         self.reset_btn.setFixedSize(80, 25)
         self.reset_btn.clicked.connect(self.reset_filters)
 
-        top_controls.addWidget(self.reset_btn)
+        
+        row_2.addWidget(QLabel("Filter by skill(s)"))
+        row_2.addWidget(self.skill_combo)
+        row_2.addSpacing(15) # Spacing
+        row_2.addWidget(QLabel("Filter by targets(s)"))
+        row_2.addWidget(self.target_combo)
+        row_2.addSpacing(15) # Spacing
+        row_2.addWidget(QLabel("Filter by player(s)"))
+        row_2.addWidget(self.caster_combo)
+        row_2.addSpacing(30) # Spacing
+        row_2.addWidget(self.reset_btn)
+        row_2.addStretch()
+
+
+        top_controls.addLayout(row_1)
+        top_controls.addLayout(row_2)
 
         self.layout.addLayout(top_controls)
 
@@ -238,32 +291,65 @@ class DamageAnalyzer(QMainWindow):
                     self.skill_combo.add_item(skill)
             self.update_all_charts()
 
-    def open_file_dialog(self):
+    def open_file_dialog(self, merge=False):
         # Open Explorer in the log directory used by TnL
         log_dir = os.path.join(os.getenv('LOCALAPPDATA'),'TL','Saved','CombatLogs')
         fname, _ = QFileDialog.getOpenFileName(self, "Open Combat Log", log_dir, "Text Files (*.txt)")
         if fname:
             try:
-                self.df = pd.read_csv(fname, header=0, names=['Timestamp','LogType','SkillName','SkillId','DamageAmount','CriticalHit','HeavyHit','DamageType','CasterName','TargetName'])
-                
+                this_df = pd.read_csv(fname, header=0, names=['Timestamp','LogType','SkillName','SkillId','DamageAmount','CriticalHit','HeavyHit','DamageType','CasterName','TargetName'])
+
                 # PRE-PROCESS TIMESTAMP for DPS Calculation
                 # Format: 20251207-13:04:08:490
                 # We need to parse this to a datetime object
-                if 'Timestamp' in self.df.columns:
-                    self.df['DT'] = pd.to_datetime(self.df['Timestamp'], format='%Y%m%d-%H:%M:%S:%f', errors='coerce')
+                if 'Timestamp' in this_df.columns:
+                    this_df['DT'] = pd.to_datetime(this_df['Timestamp'], format='%Y%m%d-%H:%M:%S:%f', errors='coerce')
 
-                # Update UI
+
+                # Handle merging multiple log files together
+                if merge:
+                    self.df = pd.concat([self.df, this_df], ignore_index=True)
+                else:
+                    self.df = this_df
+                    self.skill_combo.clear()
+                    self.target_combo.clear()
+                    self.caster_combo.clear()
+                    
+                    
+
+                # Add skills to drop down
                 self.skill_combo.blockSignals(True)
-                self.skill_combo.clear()
-            
+                current_skills = self.skill_combo.get_all_items()
                 if 'SkillName' in self.df.columns:
                     skills = sorted(self.df['SkillName'].dropna().unique().astype(str))
-                    for skill in skills:
+                    for skill in [S for S in skills if S not in current_skills]:
                         self.skill_combo.add_item(skill) # Use our custom add_item method
-                
+
+                    
+                # Add targets to drop down
+                self.target_combo.blockSignals(True)
+                current_targets = self.target_combo.get_all_items()
+                if 'TargetName' in self.df.columns:
+                    targets = sorted(self.df['TargetName'].dropna().unique().astype(str))
+                    for target in [T for T in targets if T not in current_targets]:
+                        self.target_combo.add_item(target) # Use our custom add_item method
+
+                # Add casters to drop down
+                self.caster_combo.blockSignals(True)
+                current_casters = self.caster_combo.get_all_items()
+                if 'CasterName' in self.df.columns:
+                    casters = sorted(self.df['CasterName'].dropna().unique().astype(str))
+                    for caster in [C for C in casters if C not in current_casters]:
+                        self.caster_combo.add_item(caster) # Use our custom add_item method
+
+
                 self.skill_combo.setEnabled(True)
+                self.target_combo.setEnabled(True)
+                self.caster_combo.setEnabled(True)
+                self.load_extra_log_btn.setEnabled(True)
                 self.crit_check.setEnabled(True)
                 self.heavy_check.setEnabled(True)
+                self.grouping_check.setEnabled(True)
 
                 font_style = "font-size: 24px; font-weight: bold; color: #e5e5e5;"
                 self.lbl_total_damage.setStyleSheet(font_style)
@@ -271,8 +357,10 @@ class DamageAnalyzer(QMainWindow):
                 self.lbl_duration.setStyleSheet("font-size: 18px; color: #cccccc;")
                 self.lbl_top_skill.setStyleSheet("font-size: 18px; color: #cccccc;")
 
-                # Unblock signals from the skill combo box
+                # Unblock signals from the combo boxes
                 self.skill_combo.blockSignals(False)
+                self.target_combo.blockSignals(False)
+                self.caster_combo.blockSignals(False)
                 
                 self.update_all_charts()
 
@@ -285,9 +373,22 @@ class DamageAnalyzer(QMainWindow):
         
         temp_df = self.df.copy()
         selected_skills = self.skill_combo.get_checked_items()
+        selected_targets = self.target_combo.get_checked_items()
+        selected_casters = self.caster_combo.get_checked_items()
+
+
+        # Filter by selected skills
         if selected_skills:
-            # Use .isin() for multiple values
             temp_df = temp_df[temp_df['SkillName'].isin(selected_skills)]
+
+        # Filter by selected targets
+        if selected_targets:
+            temp_df = temp_df[temp_df['TargetName'].isin(selected_targets)]
+
+        # Filter by selected casters
+        if selected_casters:
+            temp_df = temp_df[temp_df['CasterName'].isin(selected_targets)]
+
         if self.crit_check.isChecked():
             temp_df = temp_df[temp_df['CriticalHit'] == 1]
         if self.heavy_check.isChecked():
@@ -364,7 +465,11 @@ class DamageAnalyzer(QMainWindow):
         ax = self.fig_total.add_subplot(111)
 
         if not data.empty:
-            chart_data = data.groupby('SkillName')['DamageAmount'].sum().sort_values(ascending=True)
+            if self.grouping_check.isChecked():
+                chart_data = data.groupby('CasterName')['DamageAmount'].sum().sort_values(ascending=True)
+            else:
+                chart_data = data.groupby('SkillName')['DamageAmount'].sum().sort_values(ascending=True)
+            
             chart_data.plot(kind='barh', ax=ax, color='#4f81bd')
             ax.xaxis.set_major_formatter(ticker.FuncFormatter(self.format_k_m))
             ax.set_title("Total Damage Breakdown")
@@ -385,7 +490,10 @@ class DamageAnalyzer(QMainWindow):
             # Group by 1-Second intervals ('1s') and SkillName
             # .unstack() moves SkillName from rows to columns
             # .fillna(0) ensures seconds with no hits drop to 0 damage
-            dps_df = data.groupby([pd.Grouper(key='DT', freq='1s'), 'SkillName'])['DamageAmount'].sum().unstack().fillna(0)
+            if self.grouping_check.isChecked():
+                dps_df = data.groupby([pd.Grouper(key='DT', freq='1s'), 'CasterName'])['DamageAmount'].sum().unstack().fillna(0)
+            else:
+                dps_df = data.groupby([pd.Grouper(key='DT', freq='1s'), 'SkillName'])['DamageAmount'].sum().unstack().fillna(0)
             
             # --- 2. CONVERT TO RELATIVE TIME ---
             # Currently, the index is timestamps (2025-12-07 13:04:08). 
